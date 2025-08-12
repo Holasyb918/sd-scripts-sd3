@@ -20,6 +20,7 @@ from transformers import CLIPTokenizer, T5TokenizerFast
 
 import os
 import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from library import custom_offloading_utils
 from library.device_utils import clean_memory_on_device
@@ -1702,6 +1703,7 @@ def zero_module(module):
         nn.init.zeros_(p)
     return module
 
+
 # endregion
 class ControlNetSD3(nn.Module):
     def __init__(
@@ -1750,6 +1752,7 @@ class ControlNetSD3(nn.Module):
         self.pos_emb_random_crop_rate = pos_emb_random_crop_rate
         self.gradient_checkpointing = use_checkpoint
         self.hidden_size = 64 * depth
+        # print(f"hidden_size: {self.hidden_size}", "depth", depth); exit(-1)
         num_heads = depth
 
         self.num_heads = num_heads
@@ -1818,7 +1821,7 @@ class ControlNetSD3(nn.Module):
         )
         for block in self.joint_blocks:
             block.gradient_checkpointing = use_checkpoint
-        
+
         self.controlnet_blocks = nn.ModuleList([])
         for _ in range(len(self.joint_blocks)):
             controlnet_block = nn.Linear(self.hidden_size, self.hidden_size)
@@ -2137,7 +2140,6 @@ class ControlNetSD3(nn.Module):
         x = x + controlnet_cond
         del pos_embed
 
-
         c = self.t_embedder(t, dtype=x.dtype)  # (N, D)
         if y is not None and self.y_embedder is not None:
             y = self.y_embedder(y)  # (N, D)
@@ -2154,7 +2156,7 @@ class ControlNetSD3(nn.Module):
                 ),
                 1,
             )
-        
+
         block_samples = ()
         if not self.blocks_to_swap:
             for block_idx, block in enumerate(self.joint_blocks):
@@ -2182,7 +2184,7 @@ def create_sd3_controlnet(params: SD3Params, attn_mode: str = "torch") -> Contro
         adm_in_channels=params.adm_in_channels,
         context_embedder_in_features=params.context_embedder_in_features,
         context_embedder_out_features=params.context_embedder_out_features,
-        depth=24,
+        depth=params.depth,
         mlp_ratio=4,
         qk_norm=params.qk_norm,
         x_block_self_attn_layers=params.x_block_self_attn_layers,
@@ -2194,106 +2196,81 @@ def create_sd3_controlnet(params: SD3Params, attn_mode: str = "torch") -> Contro
     )
     return sd3_controlnet
 
+
 # endregion
 
-def test_sd3():
-    # small
-    params = SD3Params(
-        patch_size=2,
-        depth=24,
-        # num_patches=36864,
-        num_patches=147456,
-        pos_embed_max_size=384,
-        adm_in_channels=1536,
-        qk_norm="rms",
-        x_block_self_attn_layers=list(range(13)),
-        context_embedder_in_features=4096,
-        context_embedder_out_features=1536,
-        model_type="small",
-    )
-    sd3_model = create_sd3_mmdit(params)
-    b = 2
-    x = torch.randn(b, 16, 64, 64)
-    controlnet_cond = torch.randn(b, 16, 64, 64)
-    t = torch.randn(b)
-    y = torch.randn(b, 1536)
-    context = torch.randn(b, 64, 4096)
 
-    sd3_model.eval()
-    with torch.no_grad():
-        block_samples = sd3_model(x, t, y, context)
-        print(block_samples.shape)
+class TestSD3:
+    def __init__(self, model_type="small"):
+        self.model_type = model_type
+        model_Args = {
+            "small": SD3Params(
+                patch_size=2,
+                depth=24,
+                num_patches=147456,
+                pos_embed_max_size=384,
+                adm_in_channels=1536,
+                qk_norm="rms",
+                x_block_self_attn_layers=list(range(13)),
+                context_embedder_in_features=4096,
+                context_embedder_out_features=1536,
+                model_type="small",
+            ),
+            "medium": SD3Params(
+                patch_size=2,
+                depth=24,
+                num_patches=147456,
+                pos_embed_max_size=384,
+                adm_in_channels=2048,
+                qk_norm="rms",
+                x_block_self_attn_layers=list(range(13)),
+                context_embedder_in_features=4096,
+                context_embedder_out_features=1536,
+                model_type="medium",
+            ),
+            "large": SD3Params(
+                patch_size=2,
+                depth=38,
+                num_patches=147456,
+                pos_embed_max_size=384,
+                adm_in_channels=2048,
+                qk_norm="rms",
+                x_block_self_attn_layers=list(range(13)),
+                context_embedder_in_features=4096,
+                context_embedder_out_features=2432,
+                model_type="large",
+            ),
+        }
+        params = model_Args[model_type]
+        # print(f"params: {params}")
+        # exit(-1)
+        self.sd3_model = create_sd3_mmdit(params)
+        self.sd3_controlnet = create_sd3_controlnet(params)
+        self.b = 2
+        self.x = torch.randn(self.b, 16, 64, 64)
+        self.controlnet_cond = torch.randn(self.b, 16, 64, 64)
+        self.t = torch.randn(self.b)
+        self.y = torch.randn(self.b, params.adm_in_channels)
+        # self.y = torch.randn(self.b, 1536)
+        self.context = torch.randn(self.b, 64, 4096)
+        self.sd3_model.eval()
+        self.sd3_controlnet.eval()
+        self.block_samples = None
 
 
-def test_sd3_controlnet():
-    # small
-    params = SD3Params(
-        patch_size=2,
-        depth=24,
-        # num_patches=36864,
-        num_patches=147456,
-        # num_patches=147456,
-        pos_embed_max_size=384,
-        adm_in_channels=1536,
-        qk_norm="rms",
-        x_block_self_attn_layers=list(range(13)),
-        context_embedder_in_features=4096,
-        context_embedder_out_features=1536,
-        model_type="small",
-        controlnet_depth=12,
-    )
-    sd3_model = create_sd3_controlnet(params)
-    b = 2
-    x = torch.randn(b, 16, 64, 64)
-    controlnet_cond = torch.randn(b, 16, 64, 64)
-    t = torch.randn(b)
-    y = torch.randn(b, 1536)
-    context = torch.randn(b, 64, 4096)
-
-    sd3_model.eval()
-    with torch.no_grad():
-        block_samples = sd3_model(x, controlnet_cond, t, y, context)
-        for i, block_sample in enumerate(block_samples):
-            print(f"block {i} shape: {block_sample.shape}")
-
-def test_sd3_controlnet_comp():
-    # small
-    params = SD3Params(
-        patch_size=2,
-        depth=24,
-        # num_patches=36864,
-        num_patches=147456,
-        # num_patches=147456,
-        pos_embed_max_size=384,
-        adm_in_channels=1536,
-        qk_norm="rms",
-        x_block_self_attn_layers=list(range(13)),
-        context_embedder_in_features=4096,
-        context_embedder_out_features=1536,
-        model_type="small",
-        controlnet_depth=12,
-    )
-    sd3_model = create_sd3_mmdit(params)
-    sd3_controlnet = create_sd3_controlnet(params)
-
-    b = 2
-    x = torch.randn(b, 16, 64, 64)
-    controlnet_cond = torch.randn(b, 16, 64, 64)
-    t = torch.randn(b)
-    y = torch.randn(b, 1536)
-    context = torch.randn(b, 64, 4096)
-
-    sd3_model.eval()
-    sd3_controlnet.eval()
-    with torch.no_grad():
-        block_samples = sd3_controlnet(x, controlnet_cond, t, y, context)
-        # sd3_output = sd3_model(x, t, y, context, block_controlnet_hidden_states=None)
-        sd3_output = sd3_model(x, t, y, context, block_controlnet_hidden_states=block_samples)
-        for i, block_sample in enumerate(block_samples):
-            print(f"block {i} shape: {block_sample.shape}")
-        print(sd3_output.shape)
+    def test_sd3_controlnet(self):
+        self.block_samples = self.sd3_controlnet(self.x, self.controlnet_cond, self.t, self.y, self.context)
+    
+    def test_sd3(self):
+        self.sd3_output = self.sd3_model(self.x, self.t, self.y, self.context)
+    
+    def test_comp(self):
+        self.sd3_output = self.sd3_model(self.x, self.t, self.y, self.context, self.block_samples)
 
 if __name__ == "__main__":
-    # test_sd3()
-    # test_sd3_controlnet()
-    test_sd3_controlnet_comp()
+    # tester = TestSD3("small")
+    # tester = TestSD3("large")
+    tester = TestSD3("medium")
+    tester.test_sd3_controlnet()
+    # tester.test_sd3()
+    tester.test_comp()
